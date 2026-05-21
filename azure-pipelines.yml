@@ -1,0 +1,123 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  DOTNET_VERSION: '8.0.x'
+  BUILD_CONFIGURATION: 'Release'
+  PUBLISH_DIR: '$(Build.ArtifactStagingDirectory)/publish'
+  ARTIFACT_NAME: 'drop'
+  WEB_PROJECT: 'src/DotNetWebApp/DotNetWebApp.csproj'
+  APP_DEV: 'dotnetmywebapp-dev'
+  APP_STG: 'dotnetmywebapp-stg'
+  APP_PRD: 'dotnetmywebapp-prod'
+  AZURE_SERVICE_CONNECTION: 'dotnet-serviceconnection'
+
+stages:
+  - stage: Build_Test
+    displayName: "CI - Restore, Build, Test and Publish"
+    jobs:
+      - job: BuildJob
+        displayName: Build & Test
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+        - task: UseDotNet@2
+          displayName: "Use .NET SDK $(DOTNET_VERSION)"
+          inputs:
+            packageType: 'sdk'
+            version: '$(DOTNET_VERSION)'
+        - script: dotnet --info
+          displayName: 'Dotnet Info'
+        - script: dotnet restore **/*.sln
+          displayName: 'Restore'
+        - script: dotnet build **/*.sln --configuration $(BUILD_CONFIGURATION) --no-restore
+          displayName: 'Build'
+        - script: dotnet test dotnetwebapp-main/tests/DotNetWebApp.Tests/DotNetWebApp.Tests.csproj --configuration $(BUILD_CONFIGURATION) --no-build --logger "trx;LogFileName=test_results.trx"
+          displayName: 'Test'
+        - script: dotnet publish $(Build.SourcesDirectory)/dotnetwebapp-main/src/DotNetWebApp/DotNetWebApp.csproj --configuration Release --no-build --output "$(Build.ArtifactStagingDirectory)/publish"
+          displayName: 'Publish'
+        - task: ArchiveFiles@2
+          displayName: 'Create ZIP Package'
+          inputs:
+            rootFolderOrFile: '$(PUBLISH_DIR)'
+            includeRootFolder: false
+            archiveType: 'zip'
+            archiveFile: '$(Build.ArtifactStagingDirectory)/app.zip'
+            replaceExistingArchive: true
+        - task: PublishPipelineArtifact@1
+          displayName: 'Publish Pipeline Artifact'
+          inputs:
+            targetPath: '$(Build.ArtifactStagingDirectory)'
+            artifact: '$(ARTIFACT_NAME)'
+
+  - stage: Deploy_Dev
+    displayName: "CD — Deploy to Dev"
+    dependsOn: Build_Test
+    condition: succeeded()
+    jobs:
+    - deployment: DeployDev
+      displayName: "Deploy Dev"
+      environment: 'dev'
+      strategy:
+        runOnce:
+          deploy:
+           steps:
+           - download: current
+             artifact: '$(ARTIFACT_NAME)'
+           - task: AzureWebApp@1
+             displayName: "Deploy to App Service (Dev)"
+             inputs:
+               azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+               appName: '$(APP_DEV)'
+               package: '$(Pipeline.Workspace)/$(ARTIFACT_NAME)/app.zip'
+
+  - stage: Deploy_Staging
+    displayName: "CD — Deploy to Staging"
+    dependsOn: Deploy_Dev
+    condition: succeeded()
+    jobs:
+    - deployment: DeployStaging
+      displayName: "Deploy Staging"
+      environment: 'staging'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - download: current
+              artifact: '$(ARTIFACT_NAME)'
+            - task: AzureWebApp@1
+              displayName: "Deploy to App Service (Staging)"
+              inputs:
+                azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                appName: '$(APP_STG)'
+                package: '$(Pipeline.Workspace)/$(ARTIFACT_NAME)/app.zip'
+
+  - stage: Deploy_Prod
+    displayName: "CD — Deploy to Production"
+    dependsOn: Deploy_Staging
+    condition: succeeded()
+    jobs:
+    - deployment: DeployProd
+      displayName: "Deploy Production"
+      environment: 'production'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - download: current
+              artifact: '$(ARTIFACT_NAME)'
+            - task: AzureWebApp@1
+              displayName: "Deploy to App Service (Production)"
+              inputs:
+                azureSubscription: '$(AZURE_SERVICE_CONNECTION)'
+                appName: '$(APP_PRD)'
+                package: '$(Pipeline.Workspace)/$(ARTIFACT_NAME)/app.zip'
+    
